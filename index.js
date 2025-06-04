@@ -280,7 +280,7 @@ figlet.text("NT EXHAUST".toUpperCase(), { font: "ANSI Shadow" }, (err, data) => 
 const descriptionBox = blessed.box({
   left: "center",
   width: "100%",
-  content: "{center}{bold}{bright-yellow-fg}✦ ✦ QUIL FUN AUTO SEND ✦ ✦{/bright-yellow-fg}{/bold}{/center}",
+  content: "{center}{bold}{bright-yellow-fg}✪ QUILLS AUTO SEND FUN ✪{/bright-yellow-fg}{/bold}{/center}",
   tags: true,
   style: { fg: "white", bg: "default" }
 });
@@ -380,7 +380,7 @@ function adjustLayout() {
   headerBox.top = 0;
   headerBox.height = headerHeight;
   headerBox.width = "100%";
-  descriptionBox.top = "23%";
+  descriptionBox.top = "25%";
   descriptionBox.height = Math.floor(screenHeight * 0.05);
   logsBox.top = headerHeight + descriptionBox.height;
   logsBox.left = 0;
