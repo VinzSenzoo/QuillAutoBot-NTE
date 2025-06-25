@@ -2,16 +2,18 @@ import "dotenv/config";
 import blessed from "blessed";
 import figlet from "figlet";
 import { ethers } from "ethers";
+import axios from "axios";
 
 const RPC_URL = process.env.RPC_URL_SOMNIA_TESTNET;
 const PRIVATE_KEY = process.env.PRIVATE_KEY;
-const FUN_CONTRACT_ADDRESS = "0x16f2fEc3bF691E1516B186F51e0DAA5114C9b5e8";
+const FUN_CONTRACT_ADDRESS = "0x16f2fec3bf691e1516b186f51e0daa5114c9b5e8";
 const NETWORK_NAME = "Somnia Testnet";
 const DEBUG_MODE = false;
 
 const FUN_ABI = [
   "function addFun(string message) payable",
-  "function paused() view returns (bool)"
+  "function paused() view returns (bool)",
+  "function funFee() view returns (uint256)"
 ];
 
 const funMessages = [
@@ -27,24 +29,22 @@ const funMessages = [
   "You got this!"
 ];
 
-const FUN_FEE = 0.0001;
+const FUN_FEE = 0.1;
 
 const globalHeaders = {
-  'accept': 'application/json',
+  'accept': '*/*',
   'accept-encoding': 'gzip, deflate, br, zstd',
-  'accept-language': 'en-GB,en-US;q=0.9,en;q=0.8',
-  'cache-control': 'no-cache',
+  'accept-language': 'en-US,en;q=0.9,id;q=0.8',
   'content-type': 'application/json',
-  'origin': 'https://somnia.exchange',
-  'pragma': 'no-cache',
+  'origin': 'https://quills.fun',
   'priority': 'u=1, i',
-  'referer': 'https://somnia.exchange/',
-  'sec-ch-ua': '"Chromium";v="134", "Not:A-Brand";v="24", "Opera";v="119"',
+  'referer': 'https://quills.fun/',
+  'sec-ch-ua': '"Chromium";v="134", "Not:A-Brand";v="24", "Google Chrome";v="134"',
   'sec-ch-ua-mobile': '?0',
   'sec-ch-ua-platform': '"Windows"',
   'sec-fetch-dest': 'empty',
   'sec-fetch-mode': 'cors',
-  'sec-fetch-site': 'same-site',
+  'sec-fetch-site': 'same-origin',
   'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36'
 };
 
@@ -60,6 +60,7 @@ let swapRunning = false;
 let swapCancelled = false;
 let globalWallet = null;
 let provider = null;
+let authToken = null;
 
 function getShortAddress(address) {
   return address ? address.slice(0, 6) + "..." + address.slice(-4) : "N/A";
@@ -126,6 +127,99 @@ function updateWallet() {
   safeRender();
 }
 
+async function loginWallet() {
+  try {
+    const nonce = Date.now().toString();
+    const message = `I accept the Quills Adventure Terms of Service at https://quills.fun/terms\n\nNonce: ${nonce}`;
+    const signature = await globalWallet.signMessage(message);
+
+    const payload = {
+      address: walletInfo.address,
+      signature,
+      message
+    };
+
+    const response = await axios.post('https://quills.fun/api/auth/wallet', payload, {
+      headers: globalHeaders
+    });
+
+    if (response.data.success) {
+      addLog("Login wallet berhasil!", "success");
+      const setCookie = response.headers['set-cookie'];
+      if (setCookie) {
+        const cookie = setCookie[0];
+        const tokenMatch = cookie.match(/auth_token=([^;]+)/);
+        if (tokenMatch) {
+          authToken = tokenMatch[1];
+          addLog("Auth token berhasil disimpan.", "system");
+        } else {
+          addLog("Gagal mengekstrak auth token dari cookie.", "error");
+          return false;
+        }
+      } else {
+        addLog("Tidak ada set-cookie dalam respons login.", "error");
+        return false;
+      }
+
+      return await verifyWallet();
+    } else {
+      addLog("Login wallet gagal: " + response.data.message, "error");
+      return false;
+    }
+  } catch (error) {
+    addLog("Gagal melakukan login wallet: " + error.message, "error");
+    return false;
+  }
+}
+
+async function verifyWallet() {
+  try {
+    const response = await axios.get('https://quills.fun/api/verify-wallet', {
+      headers: {
+        ...globalHeaders,
+        cookie: `auth_token=${authToken}`
+      }
+    });
+
+    if (response.data.success) {
+      return true;
+    } else {
+      addLog("Verifikasi wallet gagal: " + response.data.message, "error");
+      return false;
+    }
+  } catch (error) {
+    addLog("Gagal memverifikasi wallet: " + error.message, "error");
+    return false;
+  }
+}
+
+async function mintNFT(message) {
+  try {
+    const payload = {
+      walletAddress: walletInfo.address,
+      message
+    };
+
+    const response = await axios.post('https://quills.fun/api/mint-nft', payload, {
+      headers: {
+        ...globalHeaders,
+        cookie: `auth_token=${authToken}`
+      }
+    });
+
+    if (response.data.success) {
+      addLog(`Mint NFT berhasil untuk pesan: "${message}"`, "success");
+      return true;
+    } else {
+      addLog("Mint NFT gagal: " + response.data.message, "error");
+      return false;
+    }
+  } catch (error) {
+    addLog("Gagal melakukan mint NFT: " + error.message, "error");
+    return false;
+  }
+}
+
 async function executeSwapWithNonceRetry(txFn, returnTx = false, maxRetries = 3) {
   for (let retry = 0; retry < maxRetries; retry++) {
     try {
@@ -154,16 +248,6 @@ async function executeSwapWithNonceRetry(txFn, returnTx = false, maxRetries = 3)
 
 async function autoSendFun() {
   try {
-    const sttAmount = FUN_FEE;
-    const amountInWei = ethers.parseEther(sttAmount.toString());
-    const message = funMessages[Math.floor(Math.random() * funMessages.length)];
-    const sttBalance = parseFloat(walletInfo.balanceStt);
-
-    if (sttBalance < sttAmount) {
-      addLog(`Saldo STT tidak cukup: ${sttBalance} < ${sttAmount}`, "warning");
-      return false;
-    }
-
     const contract = new ethers.Contract(FUN_CONTRACT_ADDRESS, FUN_ABI, globalWallet);
 
     const isPaused = await contract.paused();
@@ -172,14 +256,41 @@ async function autoSendFun() {
       return false;
     }
 
+    const contractFunFee = await contract.funFee();
+    const contractFunFeeInEther = ethers.formatEther(contractFunFee);
+    const sttAmount = FUN_FEE;
+    const amountInWei = ethers.parseEther(sttAmount.toString());
+
+    if (parseFloat(contractFunFeeInEther) > sttAmount) {
+      addLog(`Biaya kontrak ${contractFunFeeInEther} STT lebih tinggi dari FUN_FEE ${sttAmount} STT.`, "error");
+      return false;
+    }
+
+    const sttBalance = parseFloat(walletInfo.balanceStt);
+    if (sttBalance < sttAmount) {
+      addLog(`Saldo STT tidak cukup: ${sttBalance} < ${sttAmount}`, "warning");
+      return false;
+    }
+
+    const message = funMessages[Math.floor(Math.random() * funMessages.length)];
     addLog(`Melakukan send fun: "${message}" dengan ${sttAmount} STT`, "system");
 
+    let gasLimit;
+    try {
+      const estimatedGas = await contract.estimateGas.addFun(message, { value: amountInWei });
+      gasLimit = estimatedGas.mul(120).div(100);
+      addLog(`Estimasi gas: ${estimatedGas.toString()}, gas limit dengan buffer: ${gasLimit.toString()}`, "system");
+    } catch (error) {
+      gasLimit = 2000000;
+    }
+
     const receipt = await executeSwapWithNonceRetry(async (nonce) => {
-      return await contract.addFun(message, { value: amountInWei, gasLimit: 1000000, nonce });
+      return await contract.addFun(message, { value: amountInWei, gasLimit, nonce });
     });
 
     if (receipt.status === 1) {
       addLog(`Send Fun Berhasil. Hash: ${receipt.hash}`, "success");
+      await mintNFT(message);
       return true;
     } else {
       addLog("Send Fun Gagal: Transaksi reverted", "error");
@@ -280,7 +391,7 @@ figlet.text("NT EXHAUST".toUpperCase(), { font: "ANSI Shadow" }, (err, data) => 
 const descriptionBox = blessed.box({
   left: "center",
   width: "100%",
-  content: "{center}{bold}{bright-yellow-fg}✪ QUILLS AUTO SEND FUN ✪{/bright-yellow-fg}{/bold}{/center}",
+  content: "{center}{bold}{bright-yellow-fg}✦ ✦ QUIL FUN AUTO SEND ✦ ✦{/bright-yellow-fg}{/bold}{/center}",
   tags: true,
   style: { fg: "white", bg: "default" }
 });
@@ -380,7 +491,7 @@ function adjustLayout() {
   headerBox.top = 0;
   headerBox.height = headerHeight;
   headerBox.width = "100%";
-  descriptionBox.top = "25%";
+  descriptionBox.top = "23%";
   descriptionBox.height = Math.floor(screenHeight * 0.05);
   logsBox.top = headerHeight + descriptionBox.height;
   logsBox.left = 0;
@@ -459,7 +570,16 @@ screen.key(["escape", "q", "C-c"], () => process.exit(0));
 screen.key(["C-up"], () => { logsBox.scroll(-1); safeRender(); });
 screen.key(["C-down"], () => { logsBox.scroll(1); safeRender(); });
 
-safeRender();
-mainMenu.focus();
-addLog("Dont Forget To Subscribe YT And Telegram @NTExhaust!!", "system");
-updateWalletData();
+async function initialize() {
+  await updateWalletData();
+  const loginSuccess = await loginWallet();
+  if (!loginSuccess) {
+    addLog("Gagal menginisialisasi bot karena login gagal.", "error");
+    process.exit(1);
+  }
+  safeRender();
+  mainMenu.focus();
+  addLog("Dont Forget To Subscribe YT And Telegram @NTExhaust!!", "system");
+}
+
+initialize();
